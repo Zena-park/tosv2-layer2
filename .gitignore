@@ -1,5 +1,6 @@
 node_modules
 dist
+
 .env
 coverage
 coverage.json
@@ -10,3 +11,14 @@ typechain-types
 cache
 artifacts
 
+
+# Contracts
+contracts/node_modules
+contracts/.env
+contracts/coverage
+contracts/coverage.json
+contracts/typechain
+contracts/typechain-types
+
+contracts/cache
+contracts/artifacts
