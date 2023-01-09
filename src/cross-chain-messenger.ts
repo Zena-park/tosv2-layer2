@@ -473,6 +473,7 @@ export class CrossChainMessenger {
   ): Promise<IBridgeAdapter> {
     const bridges: IBridgeAdapter[] = []
     for (const bridge of Object.values(this.bridges)) {
+
       if (await bridge.supportsTokenPair(l1Token, l2Token)) {
         bridges.push(bridge)
       }

@@ -1,43 +1,43 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.9;
 
+import { CrossDomainEnabledStorage } from "./CrossDomainEnabledStorage.sol";
+import { AccessibleCommon } from "../../common/AccessibleCommon.sol";
+import { BaseProxyStorage } from "../../proxy/BaseProxyStorage.sol";
+import { L1TosV2BridgeStorage } from "./L1TosV2BridgeStorage.sol";
+
 /* Interface Imports */
-import { IL1StandardBridge } from "./IL1StandardBridge.sol";
-import { IL1ERC20Bridge } from "./IL1ERC20Bridge.sol";
+import { IL1StandardBridge } from "../messaging/IL1StandardBridge.sol";
+import { IL1ERC20Bridge } from "../messaging/IL1ERC20Bridge.sol";
 import { IL2ERC20Bridge } from "../../L2/messaging/IL2ERC20Bridge.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { ICrossDomainMessenger } from "../../libraries/bridge/ICrossDomainMessenger.sol";
 
 /* Library Imports */
-import { CrossDomainEnabled } from "../../libraries/bridge/CrossDomainEnabled.sol";
 import { Lib_PredeployAddresses } from "../../libraries/constants/Lib_PredeployAddresses.sol";
-import { Address } from "@openzeppelin/contracts/utils/Address.sol";
+
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
- * @title L1StandardBridge
- * @dev The L1 ETH and ERC20 Bridge is a contract which stores deposited L1 funds and standard
- * tokens that are in use on L2. It synchronizes a corresponding L2 Bridge, informing it of deposits
- * and listening to it for newly finalized withdrawals.
+ * @title L1TosV2Bridge
+ * @dev
  *
  */
-contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
+contract L1TosV2Bridge is CrossDomainEnabledStorage, AccessibleCommon, BaseProxyStorage, L1TosV2BridgeStorage, IL1StandardBridge {
     using SafeERC20 for IERC20;
 
-    /********************************
-     * External Contract References *
-     ********************************/
-
-    address public l2TokenBridge;
-
-    // Maps L1 token to L2 token to balance of the L1 token deposited
-    mapping(address => mapping(address => uint256)) public deposits;
+    modifier onlyL1TreasuryOrOwner() {
+        require(l1TosV2Treasury == msg.sender
+            || isAdmin(msg.sender) , "sender is not l1Tosv2Treasury and owner.");
+        _;
+    }
 
     /***************
      * Constructor *
      ***************/
 
     // This contract lives behind a proxy, so the constructor parameters will go unused.
-    constructor() CrossDomainEnabled(address(0)) {}
+    constructor() {}
 
     /******************
      * Initialization *
@@ -45,43 +45,24 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
 
     /**
      * @param _l1messenger L1 Messenger address being used for cross-chain communications.
-     * @param _l2TokenBridge L2 standard bridge address.
+     * @param _l2TosV2Bridge L2 TosV2 bridge address.
      */
     // slither-disable-next-line external-function
-    function initialize(address _l1messenger, address _l2TokenBridge) public {
+    function initialize(address _l1messenger, address _l2TosV2Bridge) public {
         require(messenger == address(0), "Contract has already been initialized.");
         messenger = _l1messenger;
-        l2TokenBridge = _l2TokenBridge;
+        l2TosV2Bridge = _l2TosV2Bridge;
     }
 
     /**************
      * Depositing *
      **************/
 
-    /** @dev Modifier requiring sender to be EOA.  This check could be bypassed by a malicious
-     *  contract via initcode, but it takes care of the user error we want to avoid.
-     */
-    modifier onlyEOA() {
-        // Used to stop deposits from contracts (avoid accidentally lost tokens)
-        require(!Address.isContract(msg.sender), "Account not EOA");
-        _;
-    }
-
-    /**
-     * @dev This function can be called with no data
-     * to deposit an amount of ETH to the caller's balance on L2.
-     * Since the receive function doesn't take data, a conservative
-     * default amount is forwarded to L2.
-     */
-    receive() external payable onlyEOA {
-        _initiateETHDeposit(msg.sender, msg.sender, 200_000, bytes(""));
-    }
-
     /**
      * @inheritdoc IL1StandardBridge
      */
-    function depositETH(uint32 _l2Gas, bytes calldata _data) external payable onlyEOA {
-        _initiateETHDeposit(msg.sender, msg.sender, _l2Gas, _data);
+    function depositETH(uint32 _l2Gas, bytes calldata _data) external payable override onlyL1TreasuryOrOwner {
+        _initiateETHDeposit(msg.sender, l2TosV2Treasury, _l2Gas, _data);
     }
 
     /**
@@ -91,7 +72,7 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
         address _to,
         uint32 _l2Gas,
         bytes calldata _data
-    ) external payable {
+    ) external payable override onlyL1TreasuryOrOwner {
         _initiateETHDeposit(msg.sender, _to, _l2Gas, _data);
     }
 
@@ -124,7 +105,7 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
 
         // Send calldata into L2
         // slither-disable-next-line reentrancy-events
-        sendCrossDomainMessage(l2TokenBridge, _l2Gas, message);
+        ICrossDomainMessenger(messenger).sendMessage(l2TosV2Bridge, message, _l2Gas);
 
         // slither-disable-next-line reentrancy-events
         emit ETHDepositInitiated(_from, _to, msg.value, _data);
@@ -139,8 +120,8 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
         uint256 _amount,
         uint32 _l2Gas,
         bytes calldata _data
-    ) external virtual onlyEOA {
-        _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, msg.sender, _amount, _l2Gas, _data);
+    ) external virtual override onlyL1TreasuryOrOwner {
+        _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, l2TosV2Treasury, _amount, _l2Gas, _data);
     }
 
     /**
@@ -153,7 +134,7 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
         uint256 _amount,
         uint32 _l2Gas,
         bytes calldata _data
-    ) external virtual {
+    ) external virtual override onlyL1TreasuryOrOwner {
         _initiateERC20Deposit(_l1Token, _l2Token, msg.sender, _to, _amount, _l2Gas, _data);
     }
 
@@ -199,7 +180,7 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
 
         // Send calldata into L2
         // slither-disable-next-line reentrancy-events, reentrancy-benign
-        sendCrossDomainMessage(l2TokenBridge, _l2Gas, message);
+        ICrossDomainMessenger(messenger).sendMessage(l2TosV2Bridge, message, _l2Gas);
 
         // slither-disable-next-line reentrancy-benign
         deposits[_l1Token][_l2Token] = deposits[_l1Token][_l2Token] + _amount;
@@ -220,7 +201,7 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
         address _to,
         uint256 _amount,
         bytes calldata _data
-    ) external onlyFromCrossDomainAccount(l2TokenBridge) {
+    ) external override onlyFromCrossDomainAccount(l2TosV2Bridge) {
         // slither-disable-next-line reentrancy-events
         (bool success, ) = _to.call{ value: _amount }(new bytes(0));
         require(success, "TransferHelper::safeTransferETH: ETH transfer failed");
@@ -239,7 +220,7 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
         address _to,
         uint256 _amount,
         bytes calldata _data
-    ) external onlyFromCrossDomainAccount(l2TokenBridge) {
+    ) external override onlyFromCrossDomainAccount(l2TosV2Bridge) {
         deposits[_l1Token][_l2Token] = deposits[_l1Token][_l2Token] - _amount;
 
         // When a withdrawal is finalized on L1, the L1 Bridge transfers the funds to the withdrawer
@@ -250,15 +231,12 @@ contract L1StandardBridge is IL1StandardBridge, CrossDomainEnabled {
         emit ERC20WithdrawalFinalized(_l1Token, _l2Token, _from, _to, _amount, _data);
     }
 
-    /*****************************
-     * Temporary - Migrating ETH *
-     *****************************/
-
     /**
-     * @dev Adds ETH balance to the account. This is meant to allow for ETH
-     * to be migrated from an old gateway to a new gateway.
-     * NOTE: This is left for one upgrade only so we are able to receive the migrated ETH from the
-     * old contract
+     * @inheritdoc IL1ERC20Bridge
      */
-    function donateETH() external payable {}
+    function l2TokenBridge() external virtual override returns (address) {
+        return l2TosV2Bridge;
+    }
+
+
 }
